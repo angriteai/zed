@@ -6,8 +6,8 @@ use crate::Inspector;
 use crate::profiler;
 use crate::{
     Action, AnyDrag, AnyElement, AnyImageCache, AnyTooltip, AnyView, App, AppContext, Arena, Asset,
-    AsyncWindowContext, AtlasTile, AvailableSpace, Background, BorderStyle, Bounds, BoxShadow,
-    Capslock, Context, Corners, CursorHideMode, CursorStyle, Decorations, DevicePixels,
+    AsyncWindowContext, AtlasTile, AvailableSpace, BackdropBlur, Background, BorderStyle, Bounds,
+    BoxShadow, Capslock, Context, Corners, CursorHideMode, CursorStyle, Decorations, DevicePixels,
     DispatchActionListener, DispatchNodeId, DispatchTree, DisplayId, Edges, Effect, Entity,
     EntityId, EventEmitter, FileDropEvent, FontId, Global, GlobalElementId, GlyphId, GpuSpecs,
     Hsla, InputHandler, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent, Keystroke,
@@ -4050,6 +4050,43 @@ impl Window {
                 pad: 0,
             });
         }
+    }
+
+    /// Paints a within-window backdrop blur over content already painted below `bounds`.
+    ///
+    /// Content painted after this call is composited above the blur. Callers should paint a
+    /// translucent surface tint after the blur so unsupported renderers retain a usable fallback.
+    /// This method must only be called during the paint phase.
+    pub fn paint_backdrop_blur(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        corner_radii: Corners<Pixels>,
+        blur_radius: Pixels,
+    ) {
+        self.invalidator.debug_assert_paint();
+        let scale_factor = self.scale_factor();
+        let content_mask = self.content_mask().scale(scale_factor);
+        let scaled_bounds = bounds.scale(scale_factor);
+        let scaled_corner_radii = corner_radii.scale(scale_factor);
+        self.next_frame.scene.insert_primitive(Shadow {
+            order: 0,
+            blur_radius: ScaledPixels(0.0),
+            bounds: scaled_bounds,
+            corner_radii: scaled_corner_radii,
+            content_mask,
+            color: transparent_black(),
+            element_bounds: scaled_bounds,
+            element_corner_radii: scaled_corner_radii,
+            inset: 0,
+            pad: 0,
+        });
+        self.next_frame.scene.insert_backdrop_blur(BackdropBlur {
+            order: 0,
+            blur_radius: blur_radius.scale(scale_factor),
+            bounds: scaled_bounds,
+            content_mask,
+            corner_radii: scaled_corner_radii,
+        });
     }
 
     fn largest_border_interior(quad: &Quad) -> Bounds<ScaledPixels> {
