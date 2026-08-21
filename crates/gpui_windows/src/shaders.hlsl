@@ -1242,7 +1242,7 @@ float4 shimmer_glyph_sprite_fragment(ShimmerGlyphVertexOutput input): SV_Target 
     float projection_min = min(min(p0, p1), min(p2, p3));
     float projection_max = max(max(p0, p1), max(p2, p3));
     float spread = max(input.shimmer.y, 0.001);
-    float center = lerp(projection_max + spread, projection_min - spread, input.shimmer.x);
+    float center = lerp(projection_min - spread, projection_max + spread, input.shimmer.x);
     float distance = abs(dot(input.position.xy, direction) - center) / spread;
     float4 color = lerp(input.highlight_color, input.color, saturate(distance));
     return float4(color.rgb, color.a * alpha_corrected);
