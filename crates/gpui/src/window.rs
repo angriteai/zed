@@ -16,13 +16,13 @@ use crate::{
     PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point, PolychromeSprite,
     Priority, PromptButton, PromptLevel, Quad, Render, RenderGlyphParams, RenderImage,
     RenderImageParams, RenderSvgParams, Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR,
-    SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, Shadow, SharedString, Size,
-    StrikethroughStyle, Style, SubpixelSprite, SubscriberSet, Subscription, SystemWindowTab,
-    SystemWindowTabController, TabStopMap, TaffyLayoutEngine, Task, TextRenderingMode, TextStyle,
-    TextStyleRefinement, ThermalState, TransformationMatrix, Underline, UnderlineStyle,
-    WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControls, WindowDecorations,
-    WindowOptions, WindowParams, WindowTextSystem, point, prelude::*, px, rems, size,
-    transparent_black,
+    SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, Shadow, SharedString,
+    ShimmerGlyphSprite, Size, StrikethroughStyle, Style, SubpixelSprite, SubscriberSet,
+    Subscription, SystemWindowTab, SystemWindowTabController, TabStopMap, TaffyLayoutEngine, Task,
+    TextRenderingMode, TextShimmer, TextStyle, TextStyleRefinement, ThermalState,
+    TransformationMatrix, Underline, UnderlineStyle, WindowAppearance, WindowBackgroundAppearance,
+    WindowBounds, WindowControls, WindowDecorations, WindowOptions, WindowParams, WindowTextSystem,
+    point, prelude::*, px, rems, size, transparent_black,
 };
 
 use anyhow::{Context as _, Result, anyhow};
@@ -4303,6 +4303,37 @@ impl Window {
         font_size: Pixels,
         color: Hsla,
     ) -> Result<()> {
+        self.paint_glyph_internal(origin, font_id, glyph_id, font_size, color, None)
+    }
+
+    /// Paints one glyph using a GPU-evaluated gradient shared by its text run.
+    pub fn paint_shimmer_glyph(
+        &mut self,
+        origin: Point<Pixels>,
+        font_id: FontId,
+        glyph_id: GlyphId,
+        font_size: Pixels,
+        shimmer: TextShimmer,
+    ) -> Result<()> {
+        self.paint_glyph_internal(
+            origin,
+            font_id,
+            glyph_id,
+            font_size,
+            shimmer.color,
+            Some(shimmer),
+        )
+    }
+
+    fn paint_glyph_internal(
+        &mut self,
+        origin: Point<Pixels>,
+        font_id: FontId,
+        glyph_id: GlyphId,
+        font_size: Pixels,
+        color: Hsla,
+        shimmer: Option<TextShimmer>,
+    ) -> Result<()> {
         self.invalidator.debug_assert_paint();
 
         let element_opacity = self.element_opacity();
@@ -4320,7 +4351,8 @@ impl Window {
             (quantized_origin.y.fract() * SUBPIXEL_VARIANTS_Y as f32) as u8,
         );
         let integer_origin = quantized_origin.map(|c| ScaledPixels(c.trunc()));
-        let subpixel_rendering = self.should_use_subpixel_rendering(font_id, font_size);
+        let subpixel_rendering =
+            shimmer.is_none() && self.should_use_subpixel_rendering(font_id, font_size);
         let dilation = self.text_system().glyph_dilation_for_color(color);
         let params = RenderGlyphParams {
             font_id,
@@ -4348,7 +4380,23 @@ impl Window {
             };
             let content_mask = self.snapped_content_mask();
 
-            if subpixel_rendering {
+            if let Some(shimmer) = shimmer {
+                self.next_frame.scene.insert_primitive(ShimmerGlyphSprite {
+                    order: 0,
+                    pad: 0,
+                    bounds,
+                    content_mask,
+                    text_bounds: shimmer.bounds.scale(scale_factor),
+                    color: shimmer.color.opacity(element_opacity),
+                    highlight_color: shimmer.highlight_color.opacity(element_opacity),
+                    phase: shimmer.phase.clamp(0.0, 1.0),
+                    spread: shimmer.spread.max(px(0.0)).scale(scale_factor),
+                    angle: shimmer.angle,
+                    pad_end: 0,
+                    tile,
+                    transformation: TransformationMatrix::unit(),
+                });
+            } else if subpixel_rendering {
                 self.next_frame.scene.insert_primitive(SubpixelSprite {
                     order: 0,
                     pad: 0,

@@ -59,6 +59,7 @@ mod macos_build {
             "BorderStyle".into(),
             "SpriteInputIndex".into(),
             "MonochromeSprite".into(),
+            "ShimmerGlyphSprite".into(),
             "PolychromeSprite".into(),
             "PathSprite".into(),
             "SurfaceInputIndex".into(),

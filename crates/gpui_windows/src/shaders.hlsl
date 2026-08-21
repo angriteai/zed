@@ -1187,6 +1187,67 @@ float4 monochrome_sprite_fragment(MonochromeSpriteFragmentInput input): SV_Targe
     return float4(input.color.rgb, input.color.a * alpha_corrected);
 }
 
+struct ShimmerGlyphSprite {
+    uint order;
+    uint pad;
+    Bounds bounds;
+    Bounds content_mask;
+    Bounds text_bounds;
+    Hsla color;
+    Hsla highlight_color;
+    float phase;
+    float spread;
+    float angle;
+    uint pad_end;
+    AtlasTile tile;
+    TransformationMatrix transformation;
+};
+
+struct ShimmerGlyphVertexOutput {
+    float4 position: SV_Position;
+    float2 tile_position: POSITION;
+    nointerpolation float4 color: COLOR;
+    nointerpolation float4 highlight_color: TEXCOORD1;
+    nointerpolation float4 text_bounds: TEXCOORD2;
+    nointerpolation float3 shimmer: TEXCOORD3;
+    float4 clip_distance: SV_ClipDistance;
+};
+
+StructuredBuffer<ShimmerGlyphSprite> shimmer_glyph_sprites: register(t1);
+
+ShimmerGlyphVertexOutput shimmer_glyph_sprite_vertex(uint vertex_id: SV_VertexID, uint instance_id: SV_InstanceID) {
+    float2 unit_vertex = float2(float(vertex_id & 1u), 0.5 * float(vertex_id & 2u));
+    ShimmerGlyphSprite sprite = shimmer_glyph_sprites[batch_start_index + instance_id];
+    ShimmerGlyphVertexOutput output;
+    output.position = to_device_position_transformed(unit_vertex, sprite.bounds, sprite.transformation);
+    output.tile_position = to_tile_position(unit_vertex, sprite.tile);
+    output.color = hsla_to_rgba(sprite.color);
+    output.highlight_color = hsla_to_rgba(sprite.highlight_color);
+    output.text_bounds = float4(sprite.text_bounds.origin.x, sprite.text_bounds.origin.y, sprite.text_bounds.size.width, sprite.text_bounds.size.height);
+    output.shimmer = float3(sprite.phase, sprite.spread, sprite.angle);
+    output.clip_distance = distance_from_clip_rect_transformed(unit_vertex, sprite.bounds, sprite.content_mask, sprite.transformation);
+    return output;
+}
+
+float4 shimmer_glyph_sprite_fragment(ShimmerGlyphVertexOutput input): SV_Target {
+    float sample = t_sprite.Sample(s_sprite, input.tile_position).r;
+    float alpha_corrected = apply_contrast_and_gamma_correction(sample, input.color.rgb, grayscale_enhanced_contrast, gamma_ratios);
+    float2 direction = float2(cos(input.shimmer.z), sin(input.shimmer.z));
+    float2 bounds_min = input.text_bounds.xy;
+    float2 bounds_max = bounds_min + input.text_bounds.zw;
+    float p0 = dot(bounds_min, direction);
+    float p1 = dot(float2(bounds_max.x, bounds_min.y), direction);
+    float p2 = dot(float2(bounds_min.x, bounds_max.y), direction);
+    float p3 = dot(bounds_max, direction);
+    float projection_min = min(min(p0, p1), min(p2, p3));
+    float projection_max = max(max(p0, p1), max(p2, p3));
+    float spread = max(input.shimmer.y, 0.001);
+    float center = lerp(projection_max + spread, projection_min - spread, input.shimmer.x);
+    float distance = abs(dot(input.position.xy, direction) - center) / spread;
+    float4 color = lerp(input.highlight_color, input.color, saturate(distance));
+    return float4(color.rgb, color.a * alpha_corrected);
+}
+
 MonochromeSpriteVertexOutput subpixel_sprite_vertex(uint vertex_id: SV_VertexID, uint instance_id: SV_InstanceID) {
     return monochrome_sprite_vertex(vertex_id, instance_id);
 }

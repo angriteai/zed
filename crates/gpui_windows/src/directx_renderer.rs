@@ -90,6 +90,7 @@ struct DirectXRenderPipelines {
     path_sprite_pipeline: PipelineState<PathSprite>,
     underline_pipeline: PipelineState<Underline>,
     mono_sprites: PipelineState<MonochromeSprite>,
+    shimmer_glyph_sprites: PipelineState<ShimmerGlyphSprite>,
     subpixel_sprites: PipelineState<SubpixelSprite>,
     poly_sprites: PipelineState<PolychromeSprite>,
 }
@@ -365,6 +366,9 @@ impl DirectXRenderer {
                 PrimitiveBatch::MonochromeSprites { texture_id, range } => {
                     self.draw_monochrome_sprites(texture_id, range.start, range.len())
                 }
+                PrimitiveBatch::ShimmerGlyphSprites { texture_id, range } => {
+                    self.draw_shimmer_glyph_sprites(texture_id, range.start, range.len())
+                }
                 PrimitiveBatch::SubpixelSprites { texture_id, range } => {
                     self.draw_subpixel_sprites(texture_id, range.start, range.len())
                 }
@@ -376,12 +380,13 @@ impl DirectXRenderer {
             .with_context(|| {
                 format!(
                     "scene too large:\
-                    {} paths, {} shadows, {} quads, {} underlines, {} mono, {} subpixel, {} poly, {} surfaces",
+                    {} paths, {} shadows, {} quads, {} underlines, {} mono, {} shimmer, {} subpixel, {} poly, {} surfaces",
                     scene.paths.len(),
                     scene.shadows.len(),
                     scene.quads.len(),
                     scene.underlines.len(),
                     scene.monochrome_sprites.len(),
+                    scene.shimmer_glyph_sprites.len(),
                     scene.subpixel_sprites.len(),
                     scene.polychrome_sprites.len(),
                     scene.surfaces.len(),
@@ -467,6 +472,14 @@ impl DirectXRenderer {
                 &devices.device,
                 &devices.device_context,
                 &scene.monochrome_sprites,
+            )?;
+        }
+
+        if !scene.shimmer_glyph_sprites.is_empty() {
+            self.pipelines.shimmer_glyph_sprites.update_buffer(
+                &devices.device,
+                &devices.device_context,
+                &scene.shimmer_glyph_sprites,
             )?;
         }
 
@@ -692,6 +705,32 @@ impl DirectXRenderer {
         )
     }
 
+    fn draw_shimmer_glyph_sprites(
+        &mut self,
+        texture_id: AtlasTextureId,
+        start: usize,
+        len: usize,
+    ) -> Result<()> {
+        if len == 0 {
+            return Ok(());
+        }
+        let devices = self.devices.as_ref().context("devices missing")?;
+        let texture_view = self.atlas.get_texture_view(texture_id);
+        self.pipelines
+            .shimmer_glyph_sprites
+            .draw_range_with_texture(
+                &devices.device_context,
+                &texture_view,
+                self.globals
+                    .batch_params_buffer
+                    .as_ref()
+                    .context("batch params buffer missing")?,
+                slice::from_ref(&self.globals.sampler),
+                start as u32,
+                len as u32,
+            )
+    }
+
     fn draw_polychrome_sprites(
         &mut self,
         texture_id: AtlasTextureId,
@@ -886,6 +925,13 @@ impl DirectXRenderPipelines {
             512,
             create_blend_state(device)?,
         )?;
+        let shimmer_glyph_sprites = PipelineState::new(
+            device,
+            "shimmer_glyph_sprite_pipeline",
+            ShaderModule::ShimmerGlyphSprite,
+            512,
+            create_blend_state(device)?,
+        )?;
         let subpixel_sprites = PipelineState::new(
             device,
             "subpixel_sprite_pipeline",
@@ -908,6 +954,7 @@ impl DirectXRenderPipelines {
             path_sprite_pipeline,
             underline_pipeline,
             mono_sprites,
+            shimmer_glyph_sprites,
             subpixel_sprites,
             poly_sprites,
         })
@@ -1617,6 +1664,7 @@ pub(crate) mod shader_resources {
         PathRasterization,
         PathSprite,
         MonochromeSprite,
+        ShimmerGlyphSprite,
         SubpixelSprite,
         PolychromeSprite,
         EmojiRasterization,
@@ -1684,6 +1732,10 @@ pub(crate) mod shader_resources {
                 ShaderModule::MonochromeSprite => match target {
                     ShaderTarget::Vertex => MONOCHROME_SPRITE_VERTEX_BYTES,
                     ShaderTarget::Fragment => MONOCHROME_SPRITE_FRAGMENT_BYTES,
+                },
+                ShaderModule::ShimmerGlyphSprite => match target {
+                    ShaderTarget::Vertex => ("shimmer_glyph_sprite_vertex", "vs_5_0"),
+                    ShaderTarget::Fragment => ("shimmer_glyph_sprite_fragment", "ps_5_0"),
                 },
                 ShaderModule::SubpixelSprite => match target {
                     ShaderTarget::Vertex => SUBPIXEL_SPRITE_VERTEX_BYTES,
@@ -1781,6 +1833,7 @@ pub(crate) mod shader_resources {
                 ShaderModule::PathRasterization => "path_rasterization",
                 ShaderModule::PathSprite => "path_sprite",
                 ShaderModule::MonochromeSprite => "monochrome_sprite",
+                ShaderModule::ShimmerGlyphSprite => "shimmer_glyph_sprite",
                 ShaderModule::SubpixelSprite => "subpixel_sprite",
                 ShaderModule::PolychromeSprite => "polychrome_sprite",
                 ShaderModule::EmojiRasterization => "emoji_rasterization",

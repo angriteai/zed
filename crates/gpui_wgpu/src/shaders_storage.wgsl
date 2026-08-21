@@ -11,6 +11,7 @@
 @group(1) @binding(0) var<storage, read> b_path_sprites: array<PathSprite>;
 @group(1) @binding(0) var<storage, read> b_underlines: array<Underline>;
 @group(1) @binding(0) var<storage, read> b_mono_sprites: array<MonochromeSprite>;
+@group(1) @binding(0) var<storage, read> b_shimmer_glyph_sprites: array<ShimmerGlyphSprite>;
 @group(1) @binding(0) var<storage, read> b_poly_sprites: array<PolychromeSprite>;
 
 fn load_quad(instance_id: u32) -> Quad {
@@ -35,6 +36,10 @@ fn load_underline(instance_id: u32) -> Underline {
 
 fn load_mono_sprite(instance_id: u32) -> MonochromeSprite {
     return b_mono_sprites[instance_id];
+}
+
+fn load_shimmer_glyph_sprite(instance_id: u32) -> ShimmerGlyphSprite {
+    return b_shimmer_glyph_sprites[instance_id];
 }
 
 fn load_poly_sprite(instance_id: u32) -> PolychromeSprite {

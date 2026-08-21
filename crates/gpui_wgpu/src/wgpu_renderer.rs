@@ -128,6 +128,7 @@ struct WgpuPipelines {
     paths: wgpu::RenderPipeline,
     underlines: wgpu::RenderPipeline,
     mono_sprites: wgpu::RenderPipeline,
+    shimmer_glyph_sprites: wgpu::RenderPipeline,
     subpixel_sprites: Option<wgpu::RenderPipeline>,
     poly_sprites: wgpu::RenderPipeline,
     #[allow(dead_code)]
@@ -155,6 +156,7 @@ struct InstanceBindings {
     shadows: InstanceBinding,
     underlines: InstanceBinding,
     monochrome_sprites: InstanceBinding,
+    shimmer_glyph_sprites: InstanceBinding,
     subpixel_sprites: InstanceBinding,
     polychrome_sprites: InstanceBinding,
 }
@@ -1145,6 +1147,18 @@ impl WgpuRenderer {
             1,
             &shader_module,
         );
+        let shimmer_glyph_sprites = create_pipeline(
+            "shimmer_glyph_sprites",
+            "vs_shimmer_glyph_sprite",
+            "fs_shimmer_glyph_sprite",
+            &layouts.globals,
+            &layouts.instances,
+            Some(&layouts.texture),
+            wgpu::PrimitiveTopology::TriangleStrip,
+            &[Some(color_target.clone())],
+            1,
+            &shader_module,
+        );
 
         let subpixel_sprites = if let Some(subpixel_module) = &subpixel_shader_module {
             let subpixel_blend = wgpu::BlendState {
@@ -1245,6 +1259,7 @@ impl WgpuRenderer {
             paths,
             underlines,
             mono_sprites,
+            shimmer_glyph_sprites,
             subpixel_sprites,
             poly_sprites,
             surfaces,
@@ -1963,12 +1978,13 @@ impl WgpuRenderer {
             .write_instances(scene, &mut instance_offset)
             .with_context(|| {
                 format!(
-                    "scene too large: {} paths, {} shadows, {} quads, {} underlines, {} monochrome sprites, {} subpixel sprites, {} polychrome sprites",
+                    "scene too large: {} paths, {} shadows, {} quads, {} underlines, {} monochrome sprites, {} shimmer glyph sprites, {} subpixel sprites, {} polychrome sprites",
                     scene.paths.len(),
                     scene.shadows.len(),
                     scene.quads.len(),
                     scene.underlines.len(),
                     scene.monochrome_sprites.len(),
+                    scene.shimmer_glyph_sprites.len(),
                     scene.subpixel_sprites.len(),
                     scene.polychrome_sprites.len(),
                 )
@@ -2081,6 +2097,13 @@ impl WgpuRenderer {
                         instance_range(range),
                         &mut pass,
                     ),
+                    PrimitiveBatch::ShimmerGlyphSprites { texture_id, range } => self.draw_sprites(
+                        &instance_bindings.shimmer_glyph_sprites,
+                        texture_id,
+                        &self.resources().pipelines.shimmer_glyph_sprites,
+                        instance_range(range),
+                        &mut pass,
+                    ),
                     PrimitiveBatch::SubpixelSprites { texture_id, range } => {
                         let resources = self.resources();
                         self.draw_sprites(
@@ -2140,6 +2163,11 @@ impl WgpuRenderer {
                 "monochrome_sprites_bind_group",
                 instance_offset,
                 &scene.monochrome_sprites,
+            )?,
+            shimmer_glyph_sprites: self.write_instance_binding(
+                "shimmer_glyph_sprites_bind_group",
+                instance_offset,
+                &scene.shimmer_glyph_sprites,
             )?,
             subpixel_sprites: self.write_instance_binding(
                 "subpixel_sprites_bind_group",
@@ -2784,6 +2812,9 @@ fn batch_first_order(scene: &Scene, batch: &PrimitiveBatch) -> DrawOrder {
         PrimitiveBatch::Underlines(range) => scene.underlines[range.start].order,
         PrimitiveBatch::MonochromeSprites { range, .. } => {
             scene.monochrome_sprites[range.start].order
+        }
+        PrimitiveBatch::ShimmerGlyphSprites { range, .. } => {
+            scene.shimmer_glyph_sprites[range.start].order
         }
         PrimitiveBatch::SubpixelSprites { range, .. } => scene.subpixel_sprites[range.start].order,
         PrimitiveBatch::PolychromeSprites { range, .. } => {

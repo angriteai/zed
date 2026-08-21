@@ -206,6 +206,25 @@ fn load_mono_sprite(instance_id: u32) -> MonochromeSprite {
     );
 }
 
+fn load_shimmer_glyph_sprite(instance_id: u32) -> ShimmerGlyphSprite {
+    var cursor = instance_cursor(instance_id * 40u);
+    return ShimmerGlyphSprite(
+        read_word(&cursor),
+        read_word(&cursor),
+        read_bounds(&cursor),
+        read_bounds(&cursor),
+        read_bounds(&cursor),
+        read_hsla(&cursor),
+        read_hsla(&cursor),
+        read_f32(&cursor),
+        read_f32(&cursor),
+        read_f32(&cursor),
+        read_word(&cursor),
+        read_atlas_tile(&cursor),
+        read_transformation(&cursor),
+    );
+}
+
 fn load_poly_sprite(instance_id: u32) -> PolychromeSprite {
     var cursor = instance_cursor(instance_id * 24u);
     return PolychromeSprite(

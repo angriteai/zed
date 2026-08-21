@@ -131,6 +131,7 @@ pub struct MetalRenderer {
     quads_pipeline_state: metal::RenderPipelineState,
     underlines_pipeline_state: metal::RenderPipelineState,
     monochrome_sprites_pipeline_state: metal::RenderPipelineState,
+    shimmer_glyph_sprites_pipeline_state: metal::RenderPipelineState,
     polychrome_sprites_pipeline_state: metal::RenderPipelineState,
     surfaces_pipeline_state: metal::RenderPipelineState,
     unit_vertices: metal::Buffer,
@@ -322,6 +323,14 @@ impl MetalRenderer {
             "monochrome_sprite_fragment",
             MTLPixelFormat::BGRA8Unorm,
         );
+        let shimmer_glyph_sprites_pipeline_state = build_pipeline_state(
+            &device,
+            &library,
+            "shimmer_glyph_sprites",
+            "shimmer_glyph_sprite_vertex",
+            "shimmer_glyph_sprite_fragment",
+            MTLPixelFormat::BGRA8Unorm,
+        );
         let polychrome_sprites_pipeline_state = build_pipeline_state(
             &device,
             &library,
@@ -362,6 +371,7 @@ impl MetalRenderer {
             quads_pipeline_state,
             underlines_pipeline_state,
             monochrome_sprites_pipeline_state,
+            shimmer_glyph_sprites_pipeline_state,
             polychrome_sprites_pipeline_state,
             surfaces_pipeline_state,
             unit_vertices,
@@ -779,6 +789,14 @@ impl MetalRenderer {
                 }
                 PrimitiveBatch::MonochromeSprites { texture_id, range } => self
                     .draw_monochrome_sprites(
+                        texture_id,
+                        range,
+                        instance_bindings,
+                        viewport_size,
+                        command_encoder,
+                    ),
+                PrimitiveBatch::ShimmerGlyphSprites { texture_id, range } => self
+                    .draw_shimmer_glyph_sprites(
                         texture_id,
                         range,
                         instance_bindings,
@@ -1238,6 +1256,55 @@ impl MetalRenderer {
         );
     }
 
+    fn draw_shimmer_glyph_sprites(
+        &self,
+        texture_id: AtlasTextureId,
+        sprites: Range<usize>,
+        instance_bindings: &InstanceBindings,
+        viewport_size: Size<DevicePixels>,
+        command_encoder: &metal::RenderCommandEncoderRef,
+    ) {
+        if sprites.is_empty() {
+            return;
+        }
+
+        let texture = self.sprite_atlas.metal_texture(texture_id);
+        let texture_size = size(
+            DevicePixels(texture.width() as i32),
+            DevicePixels(texture.height() as i32),
+        );
+        command_encoder.set_render_pipeline_state(&self.shimmer_glyph_sprites_pipeline_state);
+        command_encoder.set_vertex_buffer(
+            SpriteInputIndex::Vertices as u64,
+            Some(&self.unit_vertices),
+            0,
+        );
+        command_encoder.set_vertex_buffer(
+            SpriteInputIndex::Sprites as u64,
+            Some(&instance_bindings.shimmer_glyph_sprites.buffer),
+            instance_bindings.shimmer_glyph_sprites.offset as u64,
+        );
+        command_encoder.set_vertex_bytes(
+            SpriteInputIndex::ViewportSize as u64,
+            mem::size_of_val(&viewport_size) as u64,
+            &viewport_size as *const Size<DevicePixels> as *const _,
+        );
+        command_encoder.set_vertex_bytes(
+            SpriteInputIndex::AtlasTextureSize as u64,
+            mem::size_of_val(&texture_size) as u64,
+            &texture_size as *const Size<DevicePixels> as *const _,
+        );
+        command_encoder.set_fragment_texture(SpriteInputIndex::AtlasTexture as u64, Some(&texture));
+
+        command_encoder.draw_primitives_instanced_base_instance(
+            metal::MTLPrimitiveType::Triangle,
+            0,
+            6,
+            sprites.len() as u64,
+            sprites.start as u64,
+        );
+    }
+
     fn draw_polychrome_sprites(
         &self,
         texture_id: AtlasTextureId,
@@ -1524,6 +1591,9 @@ fn batch_first_order(scene: &Scene, batch: &PrimitiveBatch) -> DrawOrder {
         PrimitiveBatch::MonochromeSprites { range, .. } => {
             scene.monochrome_sprites[range.start].order
         }
+        PrimitiveBatch::ShimmerGlyphSprites { range, .. } => {
+            scene.shimmer_glyph_sprites[range.start].order
+        }
         PrimitiveBatch::SubpixelSprites { range, .. } => scene.subpixel_sprites[range.start].order,
         PrimitiveBatch::PolychromeSprites { range, .. } => {
             scene.polychrome_sprites[range.start].order
@@ -1617,6 +1687,7 @@ struct InstanceBindings {
     shadows: InstanceBinding,
     underlines: InstanceBinding,
     monochrome_sprites: InstanceBinding,
+    shimmer_glyph_sprites: InstanceBinding,
     polychrome_sprites: InstanceBinding,
     surfaces: InstanceBinding,
 }
@@ -1628,6 +1699,7 @@ fn write_instances(scene: &Scene, writer: &mut InstanceBufferWriter) -> Result<I
         shadows: writer.write(&scene.shadows)?,
         underlines: writer.write(&scene.underlines)?,
         monochrome_sprites: writer.write(&scene.monochrome_sprites)?,
+        shimmer_glyph_sprites: writer.write(&scene.shimmer_glyph_sprites)?,
         polychrome_sprites: writer.write(&scene.polychrome_sprites)?,
         surfaces: writer.write_iter(scene.surfaces.iter().map(|surface| SurfaceBounds {
             bounds: surface.bounds,

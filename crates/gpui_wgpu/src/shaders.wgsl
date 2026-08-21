@@ -1222,6 +1222,22 @@ struct MonochromeSprite {
     transformation: TransformationMatrix,
 }
 
+struct ShimmerGlyphSprite {
+    order: u32,
+    pad: u32,
+    bounds: Bounds,
+    content_mask: Bounds,
+    text_bounds: Bounds,
+    color: Hsla,
+    highlight_color: Hsla,
+    phase: f32,
+    spread: f32,
+    angle: f32,
+    pad_end: u32,
+    tile: AtlasTile,
+    transformation: TransformationMatrix,
+}
+
 
 struct MonoSpriteVarying {
     @builtin(position) position: vec4<f32>,
@@ -1255,6 +1271,54 @@ fn fs_mono_sprite(input: MonoSpriteVarying) -> @location(0) vec4<f32> {
     }
 
     return blend_color(input.color, alpha_corrected);
+}
+
+struct ShimmerGlyphVarying {
+    @builtin(position) position: vec4<f32>,
+    @location(0) tile_position: vec2<f32>,
+    @location(1) @interpolate(flat) color: vec4<f32>,
+    @location(2) @interpolate(flat) highlight_color: vec4<f32>,
+    @location(3) @interpolate(flat) text_bounds: vec4<f32>,
+    @location(4) @interpolate(flat) shimmer: vec3<f32>,
+    @location(5) clip_distances: vec4<f32>,
+}
+
+@vertex
+fn vs_shimmer_glyph_sprite(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index) instance_id: u32) -> ShimmerGlyphVarying {
+    let unit_vertex = vec2<f32>(f32(vertex_id & 1u), 0.5 * f32(vertex_id & 2u));
+    let sprite = load_shimmer_glyph_sprite(instance_id);
+    var out: ShimmerGlyphVarying;
+    out.position = to_device_position_transformed(unit_vertex, sprite.bounds, sprite.transformation);
+    out.tile_position = to_tile_position(unit_vertex, sprite.tile);
+    out.color = hsla_to_rgba(sprite.color);
+    out.highlight_color = hsla_to_rgba(sprite.highlight_color);
+    out.text_bounds = vec4<f32>(sprite.text_bounds.origin, sprite.text_bounds.size);
+    out.shimmer = vec3<f32>(sprite.phase, sprite.spread, sprite.angle);
+    out.clip_distances = distance_from_clip_rect_transformed(unit_vertex, sprite.bounds, sprite.content_mask, sprite.transformation);
+    return out;
+}
+
+@fragment
+fn fs_shimmer_glyph_sprite(input: ShimmerGlyphVarying) -> @location(0) vec4<f32> {
+    let sample = textureSample(t_sprite, s_sprite, input.tile_position).r;
+    let alpha_corrected = apply_contrast_and_gamma_correction(sample, input.color.rgb, gamma_params.grayscale_enhanced_contrast, gamma_params.gamma_ratios);
+    if (any(input.clip_distances < vec4<f32>(0.0))) {
+        return vec4<f32>(0.0);
+    }
+    let direction = vec2<f32>(cos(input.shimmer.z), sin(input.shimmer.z));
+    let bounds_min = input.text_bounds.xy;
+    let bounds_max = bounds_min + input.text_bounds.zw;
+    let p0 = dot(bounds_min, direction);
+    let p1 = dot(vec2<f32>(bounds_max.x, bounds_min.y), direction);
+    let p2 = dot(vec2<f32>(bounds_min.x, bounds_max.y), direction);
+    let p3 = dot(bounds_max, direction);
+    let projection_min = min(min(p0, p1), min(p2, p3));
+    let projection_max = max(max(p0, p1), max(p2, p3));
+    let spread = max(input.shimmer.y, 0.001);
+    let center = mix(projection_max + spread, projection_min - spread, input.shimmer.x);
+    let distance = abs(dot(input.position.xy, direction) - center) / spread;
+    let color = mix(input.highlight_color, input.color, saturate(distance));
+    return blend_color(color, alpha_corrected);
 }
 
 // --- polychrome sprites --- //

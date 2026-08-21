@@ -672,6 +672,64 @@ fragment float4 monochrome_sprite_fragment(
   return color;
 }
 
+struct ShimmerGlyphSpriteOutput {
+  float4 position [[position]];
+  float2 tile_position;
+  float4 color [[flat]];
+  float4 highlight_color [[flat]];
+  float4 text_bounds [[flat]];
+  float3 shimmer [[flat]];
+  float4 clip_distance;
+};
+
+vertex ShimmerGlyphSpriteOutput shimmer_glyph_sprite_vertex(
+    uint unit_vertex_id [[vertex_id]], uint sprite_id [[instance_id]],
+    constant float2 *unit_vertices [[buffer(SpriteInputIndex_Vertices)]],
+    constant ShimmerGlyphSprite *sprites [[buffer(SpriteInputIndex_Sprites)]],
+    constant Size_DevicePixels *viewport_size [[buffer(SpriteInputIndex_ViewportSize)]],
+    constant Size_DevicePixels *atlas_size [[buffer(SpriteInputIndex_AtlasTextureSize)]]) {
+  float2 unit_vertex = unit_vertices[unit_vertex_id];
+  ShimmerGlyphSprite sprite = sprites[sprite_id];
+  float4 device_position = to_device_position_transformed(
+      unit_vertex, sprite.bounds, sprite.transformation, viewport_size);
+  float4 clip_distance = distance_from_clip_rect_transformed(
+      unit_vertex, sprite.bounds, sprite.content_mask.bounds, sprite.transformation);
+  return ShimmerGlyphSpriteOutput{
+      device_position,
+      to_tile_position(unit_vertex, sprite.tile, atlas_size),
+      hsla_to_rgba(sprite.color),
+      hsla_to_rgba(sprite.highlight_color),
+      {sprite.text_bounds.origin.x, sprite.text_bounds.origin.y,
+       sprite.text_bounds.size.width, sprite.text_bounds.size.height},
+      {sprite.phase, sprite.spread, sprite.angle},
+      clip_distance};
+}
+
+fragment float4 shimmer_glyph_sprite_fragment(
+    ShimmerGlyphSpriteOutput input [[stage_in]],
+    texture2d<float> atlas_texture [[texture(SpriteInputIndex_AtlasTexture)]]) {
+  if (any(input.clip_distance < float4(0.0))) {
+    return float4(0.0);
+  }
+  constexpr sampler atlas_texture_sampler(mag_filter::linear, min_filter::linear);
+  float alpha = atlas_texture.sample(atlas_texture_sampler, input.tile_position).a;
+  float2 direction = {cos(input.shimmer.z), sin(input.shimmer.z)};
+  float2 bounds_min = input.text_bounds.xy;
+  float2 bounds_max = bounds_min + input.text_bounds.zw;
+  float p0 = dot(bounds_min, direction);
+  float p1 = dot(float2(bounds_max.x, bounds_min.y), direction);
+  float p2 = dot(float2(bounds_min.x, bounds_max.y), direction);
+  float p3 = dot(bounds_max, direction);
+  float projection_min = min(min(p0, p1), min(p2, p3));
+  float projection_max = max(max(p0, p1), max(p2, p3));
+  float spread = max(input.shimmer.y, 0.001);
+  float center = mix(projection_max + spread, projection_min - spread, input.shimmer.x);
+  float distance = abs(dot(input.position.xy, direction) - center) / spread;
+  float4 color = mix(input.highlight_color, input.color, saturate(distance));
+  color.a *= alpha;
+  return color;
+}
+
 struct PolychromeSpriteVertexOutput {
   float4 position [[position]];
   float2 tile_position;

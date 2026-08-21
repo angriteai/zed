@@ -1,6 +1,6 @@
 use crate::{
     App, Bounds, DevicePixels, Half, Hsla, LineLayout, Pixels, Point, RenderGlyphParams, Result,
-    SharedString, StrikethroughStyle, TextAlign, UnderlineStyle, Window, WrapBoundary,
+    SharedString, StrikethroughStyle, TextAlign, TextShimmer, UnderlineStyle, Window, WrapBoundary,
     WrappedLineLayout, black, fill, point, px, size,
 };
 use derive_more::{Deref, DerefMut};
@@ -97,11 +97,37 @@ impl ShapedLine {
             align_width,
             &self.decoration_runs,
             &[],
+            None,
             window,
             cx,
         )?;
 
         Ok(())
+    }
+
+    /// Paint the line using one continuous GPU-evaluated shimmer gradient.
+    pub fn paint_shimmer(
+        &self,
+        origin: Point<Pixels>,
+        line_height: Pixels,
+        align: TextAlign,
+        align_width: Option<Pixels>,
+        shimmer: TextShimmer,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Result<()> {
+        paint_line(
+            origin,
+            &self.layout,
+            line_height,
+            align,
+            align_width,
+            &self.decoration_runs,
+            &[],
+            Some(shimmer),
+            window,
+            cx,
+        )
     }
 
     /// Paint the background of the line to the window.
@@ -228,6 +254,7 @@ impl LineLayout {
             align_width,
             decoration_runs,
             &[],
+            None,
             window,
             cx,
         )
@@ -303,6 +330,7 @@ impl WrappedLine {
             align_width,
             &self.decoration_runs,
             &self.wrap_boundaries,
+            None,
             window,
             cx,
         )?;
@@ -349,6 +377,7 @@ fn paint_line(
     align_width: Option<Pixels>,
     decoration_runs: &[DecorationRun],
     wrap_boundaries: &[WrapBoundary],
+    shimmer: Option<TextShimmer>,
     window: &mut Window,
     cx: &mut App,
 ) -> Result<()> {
@@ -542,13 +571,24 @@ fn paint_line(
                             layout.font_size,
                         )?;
                     } else {
-                        window.paint_glyph(
-                            glyph_origin + baseline_offset + vertical_offset,
-                            run.font_id,
-                            glyph.id,
-                            layout.font_size,
-                            color,
-                        )?;
+                        let glyph_origin = glyph_origin + baseline_offset + vertical_offset;
+                        if let Some(shimmer) = shimmer {
+                            window.paint_shimmer_glyph(
+                                glyph_origin,
+                                run.font_id,
+                                glyph.id,
+                                layout.font_size,
+                                shimmer,
+                            )?;
+                        } else {
+                            window.paint_glyph(
+                                glyph_origin,
+                                run.font_id,
+                                glyph.id,
+                                layout.font_size,
+                                color,
+                            )?;
+                        }
                     }
                 }
             }
