@@ -1713,7 +1713,16 @@ impl PlatformWindow for X11Window {
         self.0.callbacks.borrow_mut().button_layout_changed = Some(callback);
     }
 
-    fn draw(&self, scene: &Scene) {
+    fn draw(
+        &self,
+        scene: &Scene,
+        native_overlay_scene: Option<&Scene>,
+        _native_overlay_hit_regions: &[Bounds<Pixels>],
+    ) {
+        assert!(
+            native_overlay_scene.is_none(),
+            "native overlay surfaces are not supported by the X11 backend"
+        );
         let mut inner = self.0.state.borrow_mut();
 
         if inner.renderer.device_lost() {

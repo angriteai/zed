@@ -8,6 +8,7 @@ pub fn deferred(child: impl IntoElement) -> Deferred {
     Deferred {
         child: Some(child.into_any_element()),
         priority: 0,
+        native_overlay: false,
     }
 }
 
@@ -16,6 +17,7 @@ pub fn deferred(child: impl IntoElement) -> Deferred {
 pub struct Deferred {
     child: Option<AnyElement>,
     priority: usize,
+    native_overlay: bool,
 }
 
 impl Deferred {
@@ -24,6 +26,16 @@ impl Deferred {
     /// with higher values being drawn on top.
     pub fn with_priority(mut self, priority: usize) -> Self {
         self.priority = priority;
+        self
+    }
+
+    /// Paints this deferred element into the platform's native overlay surface.
+    ///
+    /// Native overlays are intended for GPUI content that must appear above an embedded native
+    /// child view, such as a windowed browser view. Platforms that do not support a native overlay
+    /// surface fail explicitly when this element is presented.
+    pub fn on_native_overlay(mut self) -> Self {
+        self.native_overlay = true;
         self
     }
 }
@@ -62,7 +74,13 @@ impl Element for Deferred {
     ) {
         let child = self.child.take().unwrap();
         let element_offset = window.element_offset();
-        window.defer_draw(child, element_offset, self.priority, None)
+        window.defer_draw(
+            child,
+            element_offset,
+            self.priority,
+            None,
+            self.native_overlay,
+        )
     }
 
     fn paint(
@@ -200,6 +218,47 @@ mod tests {
                         .debug_bounds
                         .contains_key("NESTED_MENU")
                 );
+            })
+            .unwrap();
+    }
+
+    struct NativeOverlayView;
+
+    impl Render for NativeOverlayView {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().bg(crate::red()).child(
+                deferred(
+                    div()
+                        .w(px(120.))
+                        .h(px(80.))
+                        .bg(crate::blue())
+                        .on_mouse_down(crate::MouseButton::Left, |_, _, _| {}),
+                )
+                .on_native_overlay(),
+            )
+        }
+    }
+
+    #[gpui::test]
+    fn test_native_overlay_routes_paint_and_hitboxes_to_overlay_frame(cx: &mut TestAppContext) {
+        let window = cx.open_window(size(px(800.), px(600.)), |_, _| NativeOverlayView);
+        cx.run_until_parked();
+
+        window
+            .update(cx, |_, window, _| {
+                assert!(!window.rendered_frame.scene.quads.is_empty());
+                assert_eq!(window.rendered_frame.native_overlay_scene.quads.len(), 1);
+                assert!(!window.rendered_frame.native_overlay_hitboxes.is_empty());
+            })
+            .unwrap();
+
+        window.update(cx, |_, _, cx| cx.notify()).unwrap();
+        cx.run_until_parked();
+
+        window
+            .update(cx, |_, window, _| {
+                assert_eq!(window.rendered_frame.native_overlay_scene.quads.len(), 1);
+                assert!(!window.rendered_frame.native_overlay_hitboxes.is_empty());
             })
             .unwrap();
     }

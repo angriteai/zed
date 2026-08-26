@@ -57,6 +57,17 @@ pub unsafe fn new_renderer(
     MetalRenderer::new(context, transparent)
 }
 
+pub unsafe fn new_renderer_with_atlas(
+    context: self::Context,
+    _native_window: *mut c_void,
+    _native_view: *mut c_void,
+    _bounds: gpui::Size<f32>,
+    transparent: bool,
+    sprite_atlas: Arc<MetalAtlas>,
+) -> Renderer {
+    MetalRenderer::new_with_atlas(context, transparent, Some(sprite_atlas))
+}
+
 pub struct InstanceBufferPool {
     buffer_size: usize,
     buffers: Vec<metal::Buffer>,
@@ -159,6 +170,15 @@ pub struct PathRasterizationVertex {
 impl MetalRenderer {
     /// Creates a new MetalRenderer with a CAMetalLayer for window-based rendering.
     pub fn new(instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>, transparent: bool) -> Self {
+        Self::new_with_atlas(instance_buffer_pool, transparent, None)
+    }
+
+    /// Creates a new MetalRenderer that optionally shares an existing sprite atlas.
+    pub fn new_with_atlas(
+        instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>,
+        transparent: bool,
+        sprite_atlas: Option<Arc<MetalAtlas>>,
+    ) -> Self {
         let device = Self::create_device();
 
         let layer = metal::MetalLayer::new();
@@ -181,7 +201,13 @@ impl MetalRenderer {
             ];
         }
 
-        Self::new_internal(device, Some(layer), !transparent, instance_buffer_pool)
+        Self::new_internal(
+            device,
+            Some(layer),
+            !transparent,
+            instance_buffer_pool,
+            sprite_atlas,
+        )
     }
 
     /// Creates a new headless MetalRenderer for offscreen rendering without a window.
@@ -191,7 +217,7 @@ impl MetalRenderer {
     #[cfg(any(test, feature = "test-support"))]
     pub fn new_headless(instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>) -> Self {
         let device = Self::create_device();
-        Self::new_internal(device, None, true, instance_buffer_pool)
+        Self::new_internal(device, None, true, instance_buffer_pool, None)
     }
 
     fn create_device() -> metal::Device {
@@ -221,6 +247,7 @@ impl MetalRenderer {
         layer: Option<metal::MetalLayer>,
         opaque: bool,
         instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>,
+        sprite_atlas: Option<Arc<MetalAtlas>>,
     ) -> Self {
         #[cfg(feature = "runtime_shaders")]
         let library = device
@@ -349,7 +376,8 @@ impl MetalRenderer {
         );
 
         let command_queue = device.new_command_queue();
-        let sprite_atlas = Arc::new(MetalAtlas::new(device.clone(), is_apple_gpu));
+        let sprite_atlas =
+            sprite_atlas.unwrap_or_else(|| Arc::new(MetalAtlas::new(device.clone(), is_apple_gpu)));
         let core_video_texture_cache =
             CVMetalTextureCache::new(None, device.clone(), None).unwrap();
 

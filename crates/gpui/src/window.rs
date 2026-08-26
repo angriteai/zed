@@ -961,6 +961,7 @@ pub(crate) struct DeferredDraw {
     absolute_offset: Point<Pixels>,
     prepaint_range: Range<PrepaintStateIndex>,
     paint_range: Range<PaintIndex>,
+    native_overlay: bool,
 }
 
 pub(crate) struct Frame {
@@ -971,6 +972,8 @@ pub(crate) struct Frame {
     pub(crate) mouse_listeners: Vec<Option<AnyMouseListener>>,
     pub(crate) dispatch_tree: DispatchTree,
     pub(crate) scene: Scene,
+    pub(crate) native_overlay_scene: Scene,
+    pub(crate) native_overlay_hitboxes: FxHashSet<HitboxId>,
     pub(crate) hitboxes: Vec<Hitbox>,
     pub(crate) window_control_hitboxes: Vec<(WindowControlArea, Hitbox)>,
     pub(crate) deferred_draws: Vec<DeferredDraw>,
@@ -999,6 +1002,7 @@ pub(crate) struct PrepaintStateIndex {
 #[derive(Clone, Default)]
 pub(crate) struct PaintIndex {
     scene_index: usize,
+    native_overlay_scene_index: usize,
     mouse_listeners_index: usize,
     input_handlers_index: usize,
     cursor_styles_index: usize,
@@ -1017,6 +1021,8 @@ impl Frame {
             mouse_listeners: Vec::new(),
             dispatch_tree,
             scene: Scene::default(),
+            native_overlay_scene: Scene::default(),
+            native_overlay_hitboxes: FxHashSet::default(),
             hitboxes: Vec::new(),
             window_control_hitboxes: Vec::new(),
             deferred_draws: Vec::new(),
@@ -1042,6 +1048,8 @@ impl Frame {
         self.mouse_listeners.clear();
         self.dispatch_tree.clear();
         self.scene.clear();
+        self.native_overlay_scene.clear();
+        self.native_overlay_hitboxes.clear();
         self.input_handlers.clear();
         self.tooltip_requests.clear();
         self.cursor_styles.clear();
@@ -1118,6 +1126,7 @@ impl Frame {
         }
 
         self.scene.finish();
+        self.native_overlay_scene.finish();
     }
 }
 
@@ -1154,6 +1163,7 @@ pub struct Window {
     pub(crate) rendered_entity_stack: Vec<EntityId>,
     pub(crate) element_offset_stack: Vec<Point<Pixels>>,
     pub(crate) element_opacity: f32,
+    native_overlay_active: bool,
     pub(crate) content_mask_stack: Vec<ContentMask<Pixels>>,
     pub(crate) requested_autoscroll: Option<Bounds<Pixels>>,
     pub(crate) image_cache_stack: Vec<AnyImageCache>,
@@ -1844,6 +1854,7 @@ impl Window {
             element_offset_stack: Vec::new(),
             content_mask_stack: Vec::new(),
             element_opacity: 1.0,
+            native_overlay_active: false,
             requested_autoscroll: None,
             rendered_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
             next_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
@@ -3018,7 +3029,25 @@ impl Window {
         let _foreground_turn = profiler::journal::foreground_turn();
         #[cfg(feature = "profiler")]
         let present_start = Instant::now();
-        self.platform_window.draw(&self.rendered_frame.scene);
+        let native_overlay_hit_regions = self
+            .rendered_frame
+            .hitboxes
+            .iter()
+            .filter(|hitbox| {
+                self.rendered_frame
+                    .native_overlay_hitboxes
+                    .contains(&hitbox.id)
+            })
+            .map(|hitbox| hitbox.bounds.intersect(&hitbox.content_mask.bounds))
+            .filter(|bounds| !bounds.is_empty())
+            .collect::<Vec<_>>();
+        let native_overlay_scene = (self.rendered_frame.native_overlay_scene.len() != 0)
+            .then_some(&self.rendered_frame.native_overlay_scene);
+        self.platform_window.draw(
+            &self.rendered_frame.scene,
+            native_overlay_scene,
+            &native_overlay_hit_regions,
+        );
         #[cfg(feature = "profiler")]
         self.window_profiler.record_present(
             present_start,
@@ -3297,7 +3326,15 @@ impl Window {
             traversal_order.sort_by_key(|ix| self.next_frame.deferred_draws[*ix].priority);
 
             for deferred_draw_ix in traversal_order {
-                let (element, parent_node, current_view, rem_size, absolute_offset, prepaint_range) = {
+                let (
+                    element,
+                    parent_node,
+                    current_view,
+                    rem_size,
+                    absolute_offset,
+                    prepaint_range,
+                    native_overlay,
+                ) = {
                     let deferred_draw = &mut self.next_frame.deferred_draws[deferred_draw_ix];
                     self.element_id_stack
                         .clone_from(&deferred_draw.element_id_stack);
@@ -3310,16 +3347,19 @@ impl Window {
                         deferred_draw.rem_size,
                         deferred_draw.absolute_offset,
                         deferred_draw.prepaint_range.clone(),
+                        deferred_draw.native_overlay,
                     )
                 };
                 self.next_frame.dispatch_tree.set_active_node(parent_node);
 
                 let prepaint_start = self.prepaint_index();
                 if let Some(mut element) = element {
-                    self.with_rendered_view(current_view, |window| {
-                        window.with_rem_size(Some(rem_size), |window| {
-                            window.with_absolute_element_offset(absolute_offset, |window| {
-                                element.prepaint(window, cx);
+                    self.with_native_overlay(native_overlay, |window| {
+                        window.with_rendered_view(current_view, |window| {
+                            window.with_rem_size(Some(rem_size), |window| {
+                                window.with_absolute_element_offset(absolute_offset, |window| {
+                                    element.prepaint(window, cx);
+                                });
                             });
                         });
                     });
@@ -3328,6 +3368,13 @@ impl Window {
                     self.reuse_prepaint(prepaint_range);
                 }
                 let prepaint_end = self.prepaint_index();
+                if native_overlay {
+                    for hitbox in &self.next_frame.hitboxes
+                        [prepaint_start.hitboxes_index..prepaint_end.hitboxes_index]
+                    {
+                        self.next_frame.native_overlay_hitboxes.insert(hitbox.id);
+                    }
+                }
                 self.next_frame.deferred_draws[deferred_draw_ix].prepaint_range =
                     prepaint_start..prepaint_end;
             }
@@ -3360,11 +3407,13 @@ impl Window {
             let paint_start = self.paint_index();
             let content_mask = deferred_draw.content_mask;
             if let Some(element) = deferred_draw.element.as_mut() {
-                self.with_rendered_view(deferred_draw.current_view, |window| {
-                    window.with_content_mask(content_mask, |window| {
-                        window.with_rem_size(Some(deferred_draw.rem_size), |window| {
-                            element.paint(window, cx);
-                        });
+                self.with_native_overlay(deferred_draw.native_overlay, |window| {
+                    window.with_rendered_view(deferred_draw.current_view, |window| {
+                        window.with_content_mask(content_mask, |window| {
+                            window.with_rem_size(Some(deferred_draw.rem_size), |window| {
+                                element.paint(window, cx);
+                            });
+                        })
                     })
                 })
             } else {
@@ -3396,11 +3445,18 @@ impl Window {
     }
 
     pub(crate) fn reuse_prepaint(&mut self, range: Range<PrepaintStateIndex>) {
-        self.next_frame.hitboxes.extend(
-            self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index]
-                .iter()
-                .cloned(),
-        );
+        for hitbox in
+            &self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index]
+        {
+            if self
+                .rendered_frame
+                .native_overlay_hitboxes
+                .contains(&hitbox.id)
+            {
+                self.next_frame.native_overlay_hitboxes.insert(hitbox.id);
+            }
+            self.next_frame.hitboxes.push(hitbox.clone());
+        }
         self.next_frame.tooltip_requests.extend(
             self.rendered_frame.tooltip_requests
                 [range.start.tooltips_index..range.end.tooltips_index]
@@ -3442,6 +3498,7 @@ impl Window {
                     absolute_offset: deferred_draw.absolute_offset,
                     prepaint_range: deferred_draw.prepaint_range.clone(),
                     paint_range: deferred_draw.paint_range.clone(),
+                    native_overlay: deferred_draw.native_overlay,
                 }),
         );
     }
@@ -3449,6 +3506,7 @@ impl Window {
     pub(crate) fn paint_index(&self) -> PaintIndex {
         PaintIndex {
             scene_index: self.next_frame.scene.len(),
+            native_overlay_scene_index: self.next_frame.native_overlay_scene.len(),
             mouse_listeners_index: self.next_frame.mouse_listeners.len(),
             input_handlers_index: self.next_frame.input_handlers.len(),
             cursor_styles_index: self.next_frame.cursor_styles.len(),
@@ -3493,6 +3551,10 @@ impl Window {
         self.next_frame.scene.replay(
             range.start.scene_index..range.end.scene_index,
             &self.rendered_frame.scene,
+        );
+        self.next_frame.native_overlay_scene.replay(
+            range.start.native_overlay_scene_index..range.end.native_overlay_scene_index,
+            &self.rendered_frame.native_overlay_scene,
         );
     }
 
@@ -3926,6 +3988,7 @@ impl Window {
         absolute_offset: Point<Pixels>,
         priority: usize,
         content_mask: Option<ContentMask<Pixels>>,
+        native_overlay: bool,
     ) {
         self.invalidator.debug_assert_prepaint();
         let parent_node = self.next_frame.dispatch_tree.active_node_id().unwrap();
@@ -3941,7 +4004,28 @@ impl Window {
             absolute_offset,
             prepaint_range: PrepaintStateIndex::default()..PrepaintStateIndex::default(),
             paint_range: PaintIndex::default()..PaintIndex::default(),
+            native_overlay: native_overlay || self.native_overlay_active,
         });
+    }
+
+    fn with_native_overlay<R>(
+        &mut self,
+        native_overlay: bool,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let previous = self.native_overlay_active;
+        self.native_overlay_active = previous || native_overlay;
+        let result = f(self);
+        self.native_overlay_active = previous;
+        result
+    }
+
+    fn active_scene(&mut self) -> &mut Scene {
+        if self.native_overlay_active {
+            &mut self.next_frame.native_overlay_scene
+        } else {
+            &mut self.next_frame.scene
+        }
     }
 
     /// Creates a new painting layer for the specified bounds. A "layer" is a batch
@@ -3955,15 +4039,14 @@ impl Window {
         let content_mask = self.content_mask();
         let clipped_bounds = bounds.intersect(&content_mask.bounds);
         if !clipped_bounds.is_empty() {
-            self.next_frame
-                .scene
-                .push_layer(self.cover_bounds(clipped_bounds));
+            let cover_bounds = self.cover_bounds(clipped_bounds);
+            self.active_scene().push_layer(cover_bounds);
         }
 
         let result = f(self);
 
         if !clipped_bounds.is_empty() {
-            self.next_frame.scene.pop_layer();
+            self.active_scene().pop_layer();
         }
 
         result
@@ -3992,10 +4075,11 @@ impl Window {
                 continue;
             }
             let shadow_bounds = (bounds + shadow.offset).dilate(shadow.spread_radius);
-            self.next_frame.scene.insert_primitive(Shadow {
+            let shadow_bounds = self.cover_bounds(shadow_bounds);
+            self.active_scene().insert_primitive(Shadow {
                 order: 0,
                 blur_radius: shadow.blur_radius.scale(scale_factor),
-                bounds: self.cover_bounds(shadow_bounds),
+                bounds: shadow_bounds,
                 content_mask,
                 corner_radii: corner_radii.scale(scale_factor),
                 color: shadow.color.opacity(opacity),
@@ -4037,10 +4121,11 @@ impl Window {
                 bottom_right: (corner_radii.bottom_right - shadow.spread_radius).max(zero),
                 bottom_left: (corner_radii.bottom_left - shadow.spread_radius).max(zero),
             };
-            self.next_frame.scene.insert_primitive(Shadow {
+            let hole = self.cover_bounds(hole);
+            self.active_scene().insert_primitive(Shadow {
                 order: 0,
                 blur_radius: shadow.blur_radius.scale(scale_factor),
-                bounds: self.cover_bounds(hole),
+                bounds: hole,
                 content_mask,
                 corner_radii: hole_corner_radii.scale(scale_factor),
                 color: shadow.color.opacity(opacity),
@@ -4068,7 +4153,7 @@ impl Window {
         let content_mask = self.content_mask().scale(scale_factor);
         let scaled_bounds = bounds.scale(scale_factor);
         let scaled_corner_radii = corner_radii.scale(scale_factor);
-        self.next_frame.scene.insert_primitive(Shadow {
+        self.active_scene().insert_primitive(Shadow {
             order: 0,
             blur_radius: ScaledPixels(0.0),
             bounds: scaled_bounds,
@@ -4080,7 +4165,7 @@ impl Window {
             inset: 0,
             pad: 0,
         });
-        self.next_frame.scene.insert_backdrop_blur(BackdropBlur {
+        self.active_scene().insert_backdrop_blur(BackdropBlur {
             order: 0,
             blur_radius: blur_radius.scale(scale_factor),
             bounds: scaled_bounds,
@@ -4155,7 +4240,7 @@ impl Window {
         };
 
         if !quad.background.is_transparent() {
-            self.next_frame.scene.insert_primitive(quad);
+            self.active_scene().insert_primitive(quad);
             return;
         }
 
@@ -4165,7 +4250,7 @@ impl Window {
         let inner_bounds = Self::largest_border_interior(&quad);
 
         if inner_bounds.is_empty() {
-            self.next_frame.scene.insert_primitive(quad);
+            self.active_scene().insert_primitive(quad);
             return;
         }
 
@@ -4195,7 +4280,7 @@ impl Window {
         for strip in strips {
             let content_mask_bounds = quad.content_mask.bounds.intersect(&strip);
             if !content_mask_bounds.is_empty() {
-                self.next_frame.scene.insert_primitive(Quad {
+                self.active_scene().insert_primitive(Quad {
                     content_mask: ContentMask {
                         bounds: content_mask_bounds,
                     },
@@ -4245,12 +4330,13 @@ impl Window {
             size: size(self.snap_stroke(width), height),
         };
         let element_opacity = self.element_opacity();
+        let content_mask = self.snapped_content_mask();
 
-        self.next_frame.scene.insert_primitive(Underline {
+        self.active_scene().insert_primitive(Underline {
             order: 0,
             pad: 0,
             bounds,
-            content_mask: self.snapped_content_mask(),
+            content_mask,
             color: style.color.unwrap_or_default().opacity(element_opacity),
             thickness,
             wavy: style.wavy.into(),
@@ -4275,13 +4361,15 @@ impl Window {
             size: size(self.snap_stroke(width), self.snap_stroke(height)),
         };
         let opacity = self.element_opacity();
+        let content_mask = self.snapped_content_mask();
+        let thickness = self.snap_stroke(style.thickness);
 
-        self.next_frame.scene.insert_primitive(Underline {
+        self.active_scene().insert_primitive(Underline {
             order: 0,
             pad: 0,
             bounds,
-            content_mask: self.snapped_content_mask(),
-            thickness: self.snap_stroke(style.thickness),
+            content_mask,
+            thickness,
             color: style.color.unwrap_or_default().opacity(opacity),
             wavy: false.into(),
         });
@@ -4381,7 +4469,7 @@ impl Window {
             let content_mask = self.snapped_content_mask();
 
             if let Some(shimmer) = shimmer {
-                self.next_frame.scene.insert_primitive(ShimmerGlyphSprite {
+                self.active_scene().insert_primitive(ShimmerGlyphSprite {
                     order: 0,
                     pad: 0,
                     bounds,
@@ -4397,7 +4485,7 @@ impl Window {
                     transformation: TransformationMatrix::unit(),
                 });
             } else if subpixel_rendering {
-                self.next_frame.scene.insert_primitive(SubpixelSprite {
+                self.active_scene().insert_primitive(SubpixelSprite {
                     order: 0,
                     pad: 0,
                     bounds,
@@ -4407,7 +4495,7 @@ impl Window {
                     transformation: TransformationMatrix::unit(),
                 });
             } else {
-                self.next_frame.scene.insert_primitive(MonochromeSprite {
+                self.active_scene().insert_primitive(MonochromeSprite {
                     order: 0,
                     pad: 0,
                     bounds,
@@ -4488,7 +4576,7 @@ impl Window {
             let content_mask = self.snapped_content_mask();
             let opacity = self.element_opacity();
 
-            self.next_frame.scene.insert_primitive(PolychromeSprite {
+            self.active_scene().insert_primitive(PolychromeSprite {
                 order: 0,
                 pad: 0,
                 grayscale: false.into(),
@@ -4554,7 +4642,7 @@ impl Window {
             .map_origin(|value| ScaledPixels(round_half_toward_zero(value.0)))
             .map_size(|size| size.ceil());
 
-        self.next_frame.scene.insert_primitive(MonochromeSprite {
+        self.active_scene().insert_primitive(MonochromeSprite {
             order: 0,
             pad: 0,
             bounds: final_bounds,
@@ -4660,7 +4748,7 @@ impl Window {
             .scale(self.scale_factor());
         let opacity = self.element_opacity();
 
-        self.next_frame.scene.insert_primitive(PolychromeSprite {
+        self.active_scene().insert_primitive(PolychromeSprite {
             order: 0,
             pad: 0,
             grayscale: grayscale.into(),
@@ -4684,7 +4772,7 @@ impl Window {
 
         let bounds = self.snap_bounds(bounds);
         let content_mask = self.snapped_content_mask();
-        self.next_frame.scene.insert_primitive(PaintSurface {
+        self.active_scene().insert_primitive(PaintSurface {
             order: 0,
             bounds,
             content_mask,

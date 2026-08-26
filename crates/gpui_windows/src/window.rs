@@ -988,7 +988,16 @@ impl PlatformWindow for WindowsWindow {
             .set(Some(callback));
     }
 
-    fn draw(&self, scene: &Scene) {
+    fn draw(
+        &self,
+        scene: &Scene,
+        native_overlay_scene: Option<&Scene>,
+        _native_overlay_hit_regions: &[Bounds<Pixels>],
+    ) {
+        assert!(
+            native_overlay_scene.is_none(),
+            "native overlay surfaces are not supported on Windows"
+        );
         self.state
             .renderer
             .borrow_mut()

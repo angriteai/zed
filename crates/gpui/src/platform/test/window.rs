@@ -358,7 +358,12 @@ impl PlatformWindow for TestWindow {
         self.0.lock().appearance_change_callback = Some(callback);
     }
 
-    fn draw(&self, scene: &Scene) {
+    fn draw(
+        &self,
+        scene: &Scene,
+        _native_overlay_scene: Option<&Scene>,
+        _native_overlay_hit_regions: &[Bounds<Pixels>],
+    ) {
         let scale_factor = self.scale_factor();
         let mut state = self.0.lock();
         let device_size: Size<DevicePixels> = state.bounds.size.to_device_pixels(scale_factor);

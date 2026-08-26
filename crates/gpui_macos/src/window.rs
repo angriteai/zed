@@ -79,6 +79,7 @@ const WINDOW_STATE_IVAR: &str = "windowState";
 static mut WINDOW_CLASS: *const Class = ptr::null();
 static mut PANEL_CLASS: *const Class = ptr::null();
 static mut VIEW_CLASS: *const Class = ptr::null();
+static mut NATIVE_OVERLAY_VIEW_CLASS: *const Class = ptr::null();
 static mut BLURRED_VIEW_CLASS: *const Class = ptr::null();
 
 #[allow(non_upper_case_globals)]
@@ -297,6 +298,80 @@ unsafe fn build_classes() {
             decl.add_method(
                 sel!(characterIndexForPoint:),
                 character_index_for_point as extern "C" fn(&Object, Sel, NSPoint) -> u64,
+            );
+            decl.register()
+        };
+        NATIVE_OVERLAY_VIEW_CLASS = {
+            let mut decl = ClassDecl::new("GPUINativeOverlayView", class!(NSView)).unwrap();
+            decl.add_ivar::<*mut c_void>(WINDOW_STATE_IVAR);
+            decl.add_method(sel!(dealloc), dealloc_view as extern "C" fn(&Object, Sel));
+            decl.add_method(
+                sel!(mouseDown:),
+                handle_view_event as extern "C" fn(&Object, Sel, id),
+            );
+            decl.add_method(
+                sel!(mouseUp:),
+                handle_view_event as extern "C" fn(&Object, Sel, id),
+            );
+            decl.add_method(
+                sel!(rightMouseDown:),
+                handle_view_event as extern "C" fn(&Object, Sel, id),
+            );
+            decl.add_method(
+                sel!(rightMouseUp:),
+                handle_view_event as extern "C" fn(&Object, Sel, id),
+            );
+            decl.add_method(
+                sel!(otherMouseDown:),
+                handle_view_event as extern "C" fn(&Object, Sel, id),
+            );
+            decl.add_method(
+                sel!(otherMouseUp:),
+                handle_view_event as extern "C" fn(&Object, Sel, id),
+            );
+            decl.add_method(
+                sel!(mouseMoved:),
+                handle_view_event as extern "C" fn(&Object, Sel, id),
+            );
+            decl.add_method(
+                sel!(mouseDragged:),
+                handle_view_event as extern "C" fn(&Object, Sel, id),
+            );
+            decl.add_method(
+                sel!(rightMouseDragged:),
+                handle_view_event as extern "C" fn(&Object, Sel, id),
+            );
+            decl.add_method(
+                sel!(otherMouseDragged:),
+                handle_view_event as extern "C" fn(&Object, Sel, id),
+            );
+            decl.add_method(
+                sel!(scrollWheel:),
+                handle_view_event as extern "C" fn(&Object, Sel, id),
+            );
+            decl.add_method(
+                sel!(magnifyWithEvent:),
+                handle_view_event as extern "C" fn(&Object, Sel, id),
+            );
+            decl.add_method(
+                sel!(swipeWithEvent:),
+                handle_view_event as extern "C" fn(&Object, Sel, id),
+            );
+            decl.add_method(
+                sel!(mouseExited:),
+                handle_view_event as extern "C" fn(&Object, Sel, id),
+            );
+            decl.add_method(
+                sel!(resetCursorRects),
+                reset_cursor_rects as extern "C" fn(&Object, Sel),
+            );
+            decl.add_method(
+                sel!(makeBackingLayer),
+                make_native_overlay_backing_layer as extern "C" fn(&Object, Sel) -> id,
+            );
+            decl.add_method(
+                sel!(hitTest:),
+                native_overlay_hit_test as extern "C" fn(&Object, Sel, NSPoint) -> id,
             );
             decl.register()
         };
@@ -591,12 +666,15 @@ struct MacWindowState {
     background_executor: BackgroundExecutor,
     native_window: id,
     native_view: NonNull<Object>,
+    native_overlay_view: NonNull<Object>,
     blurred_view: Option<id>,
     background_appearance: WindowBackgroundAppearance,
     cursor_style: CursorStyle,
     cursor_visible: Arc<AtomicBool>,
     frame_source: Option<WindowFrameSource>,
     renderer: renderer::Renderer,
+    native_overlay_renderer: renderer::Renderer,
+    native_overlay_hit_regions: Vec<Bounds<Pixels>>,
     request_frame_callback: Option<Box<dyn FnMut(RequestFrameOptions)>>,
     event_callback: Option<Box<dyn FnMut(PlatformInput) -> gpui::DispatchEventResult>>,
     activate_callback: Option<Box<dyn FnMut(bool)>>,
@@ -1010,6 +1088,26 @@ impl MacWindow {
             let native_view: id = msg_send![VIEW_CLASS, alloc];
             let native_view = NSView::initWithFrame_(native_view, NSView::bounds(content_view));
             assert!(!native_view.is_null());
+            let native_overlay_view: id = msg_send![NATIVE_OVERLAY_VIEW_CLASS, alloc];
+            let native_overlay_view =
+                NSView::initWithFrame_(native_overlay_view, NSView::bounds(content_view));
+            assert!(!native_overlay_view.is_null());
+
+            let renderer = renderer::new_renderer(
+                renderer_context.clone(),
+                native_window as *mut _,
+                native_view as *mut _,
+                bounds.size.map(|pixels| pixels.as_f32()),
+                false,
+            );
+            let native_overlay_renderer = renderer::new_renderer_with_atlas(
+                renderer_context,
+                native_window as *mut _,
+                native_overlay_view as *mut _,
+                bounds.size.map(|pixels| pixels.as_f32()),
+                true,
+                renderer.sprite_atlas().clone(),
+            );
 
             let mut window = Self(Arc::new(Mutex::new(MacWindowState {
                 handle,
@@ -1017,18 +1115,15 @@ impl MacWindow {
                 background_executor,
                 native_window,
                 native_view: NonNull::new_unchecked(native_view),
+                native_overlay_view: NonNull::new_unchecked(native_overlay_view),
                 blurred_view: None,
                 background_appearance: WindowBackgroundAppearance::Opaque,
                 cursor_style: CursorStyle::Arrow,
                 cursor_visible,
                 frame_source: None,
-                renderer: renderer::new_renderer(
-                    renderer_context,
-                    native_window as *mut _,
-                    native_view as *mut _,
-                    bounds.size.map(|pixels| pixels.as_f32()),
-                    false,
-                ),
+                renderer,
+                native_overlay_renderer,
+                native_overlay_hit_regions: Vec::new(),
                 request_frame_callback: None,
                 event_callback: None,
                 activate_callback: None,
@@ -1076,6 +1171,10 @@ impl MacWindow {
                 WINDOW_STATE_IVAR,
                 Arc::into_raw(window.0.clone()) as *const c_void,
             );
+            (*native_overlay_view).set_ivar(
+                WINDOW_STATE_IVAR,
+                Arc::into_raw(window.0.clone()) as *const c_void,
+            );
 
             if let Some(title) = titlebar
                 .as_ref()
@@ -1100,6 +1199,8 @@ impl MacWindow {
 
             native_view.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable);
             native_view.setWantsBestResolutionOpenGLSurface_(YES);
+            native_overlay_view.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable);
+            native_overlay_view.setWantsBestResolutionOpenGLSurface_(YES);
 
             // From winit crate: On Mojave, views automatically become layer-backed shortly after
             // being added to a native_window. Changing the layer-backedness of a view breaks the
@@ -1107,12 +1208,19 @@ impl MacWindow {
             // on we explicitly make the view layer-backed up front so that AppKit doesn't do it
             // itself and break the association with its context.
             native_view.setWantsLayer(YES);
+            native_overlay_view.setWantsLayer(YES);
             let _: () = msg_send![
             native_view,
             setLayerContentsRedrawPolicy: NSViewLayerContentsRedrawDuringViewResize
             ];
+            let _: () = msg_send![
+            native_overlay_view,
+            setLayerContentsRedrawPolicy: NSViewLayerContentsRedrawDuringViewResize
+            ];
 
             content_view.addSubview_(native_view.autorelease());
+            content_view.addSubview_(native_overlay_view.autorelease());
+            let _: () = msg_send![native_overlay_view, setHidden: YES];
             native_window.makeFirstResponder_(native_view);
 
             let app: id = NSApplication::sharedApplication(nil);
@@ -1903,9 +2011,32 @@ impl PlatformWindow for MacWindow {
         self.0.as_ref().lock().toggle_tab_bar_callback = Some(callback);
     }
 
-    fn draw(&self, scene: &gpui::Scene) {
+    fn draw(
+        &self,
+        scene: &gpui::Scene,
+        native_overlay_scene: Option<&gpui::Scene>,
+        native_overlay_hit_regions: &[Bounds<Pixels>],
+    ) {
         let mut this = self.0.lock();
         this.renderer.draw(scene);
+        this.native_overlay_hit_regions = native_overlay_hit_regions.to_vec();
+
+        unsafe {
+            let native_overlay_view = this.native_overlay_view.as_ptr();
+            if let Some(native_overlay_scene) = native_overlay_scene {
+                let content_view = this.native_window.contentView();
+                let _: () = msg_send![
+                    content_view,
+                    addSubview: native_overlay_view
+                    positioned: NSWindowOrderingMode::NSWindowAbove
+                    relativeTo: nil
+                ];
+                let _: () = msg_send![native_overlay_view, setHidden: NO];
+                this.native_overlay_renderer.draw(native_overlay_scene);
+            } else {
+                let _: () = msg_send![native_overlay_view, setHidden: YES];
+            }
+        }
     }
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
@@ -2788,8 +2919,18 @@ fn update_window_scale_factor(window_state: &Arc<Mutex<MacWindowState>>) {
             ];
         }
     }
+    if let Some(layer) = lock.native_overlay_renderer.layer() {
+        unsafe {
+            let _: () = msg_send![
+                layer,
+                setContentsScale: scale_factor as f64
+            ];
+        }
+    }
 
     lock.renderer.update_drawable_size(drawable_size);
+    lock.native_overlay_renderer
+        .update_drawable_size(drawable_size);
 
     if let Some(mut callback) = lock.resize_callback.take() {
         let content_size = lock.content_size();
@@ -2933,6 +3074,31 @@ extern "C" fn make_backing_layer(this: &Object, _: Sel) -> id {
     window_state.renderer.layer_ptr() as id
 }
 
+extern "C" fn make_native_overlay_backing_layer(this: &Object, _: Sel) -> id {
+    let window_state = unsafe { get_window_state(this) };
+    let window_state = window_state.as_ref().lock();
+    window_state.native_overlay_renderer.layer_ptr() as id
+}
+
+extern "C" fn native_overlay_hit_test(this: &Object, _: Sel, native_point: NSPoint) -> id {
+    let window_state = unsafe { get_window_state(this) };
+    let window_state = window_state.as_ref().lock();
+    let position = point(
+        px(native_point.x as f32),
+        window_state.content_size().height - px(native_point.y as f32),
+    );
+
+    if window_state
+        .native_overlay_hit_regions
+        .iter()
+        .any(|bounds| bounds.contains(&position))
+    {
+        this as *const Object as id
+    } else {
+        nil
+    }
+}
+
 extern "C" fn view_did_change_backing_properties(this: &Object, _: Sel) {
     let window_state = unsafe { get_window_state(this) };
     update_window_scale_factor(&window_state);
@@ -2966,6 +3132,8 @@ extern "C" fn set_frame_size(this: &Object, _: Sel, size: NSSize) {
     let scale_factor = lock.scale_factor();
     let drawable_size = new_size.to_device_pixels(scale_factor);
     lock.renderer.update_drawable_size(drawable_size);
+    lock.native_overlay_renderer
+        .update_drawable_size(drawable_size);
 
     if let Some(mut callback) = lock.resize_callback.take() {
         let content_size = lock.content_size();

@@ -772,7 +772,16 @@ impl PlatformWindow for WebWindow {
         self.inner.callbacks.borrow_mut().appearance_changed = Some(callback);
     }
 
-    fn draw(&self, scene: &Scene) {
+    fn draw(
+        &self,
+        scene: &Scene,
+        native_overlay_scene: Option<&Scene>,
+        _native_overlay_hit_regions: &[Bounds<Pixels>],
+    ) {
+        assert!(
+            native_overlay_scene.is_none(),
+            "native overlay surfaces are not supported on the web platform"
+        );
         if let Some((width, height)) = self.inner.pending_physical_size.take() {
             if self.inner.canvas.width() != width || self.inner.canvas.height() != height {
                 self.inner.canvas.set_width(width);

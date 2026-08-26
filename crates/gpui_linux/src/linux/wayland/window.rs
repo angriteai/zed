@@ -1704,7 +1704,16 @@ impl PlatformWindow for WaylandWindow {
         self.0.callbacks.borrow_mut().button_layout_changed = Some(callback);
     }
 
-    fn draw(&self, scene: &Scene) {
+    fn draw(
+        &self,
+        scene: &Scene,
+        native_overlay_scene: Option<&Scene>,
+        _native_overlay_hit_regions: &[Bounds<Pixels>],
+    ) {
+        assert!(
+            native_overlay_scene.is_none(),
+            "native overlay surfaces are not supported by the Wayland backend"
+        );
         let mut state = self.borrow_mut();
 
         if state.renderer.device_lost() {
