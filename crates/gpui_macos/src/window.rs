@@ -2771,9 +2771,14 @@ extern "C" fn handle_view_event(this: &Object, _: Sel, native_event: id) {
 
         match &event {
             PlatformInput::MouseDown(_) => {
+                let input_context_owner = mouse_input_context_owner(
+                    this as *const Object as id,
+                    lock.native_view.as_ptr(),
+                    lock.native_overlay_view.as_ptr(),
+                );
                 drop(lock);
                 unsafe {
-                    let input_context: id = msg_send![this, inputContext];
+                    let input_context: id = msg_send![input_context_owner, inputContext];
                     msg_send![input_context, handleEvent: native_event]
                 }
                 lock = window_state.as_ref().lock();
@@ -2831,6 +2836,14 @@ extern "C" fn handle_view_event(this: &Object, _: Sel, native_event: id) {
             callback(event);
             window_state.lock().event_callback = Some(callback);
         }
+    }
+}
+
+fn mouse_input_context_owner(event_view: id, native_view: id, native_overlay_view: id) -> id {
+    if event_view == native_overlay_view {
+        native_view
+    } else {
+        event_view
     }
 }
 
@@ -3749,5 +3762,21 @@ mod tests {
     #[test]
     fn display_id_for_screen_returns_none_for_null_screen() {
         assert_eq!(display_id_for_screen(nil), None);
+    }
+
+    #[test]
+    fn native_overlay_mouse_input_uses_base_view_text_input_context() {
+        let native_view = 1_usize as id;
+        let native_overlay_view = 2_usize as id;
+        let unrelated_view = 3_usize as id;
+
+        assert_eq!(
+            mouse_input_context_owner(native_overlay_view, native_view, native_overlay_view),
+            native_view
+        );
+        assert_eq!(
+            mouse_input_context_owner(unrelated_view, native_view, native_overlay_view),
+            unrelated_view
+        );
     }
 }
